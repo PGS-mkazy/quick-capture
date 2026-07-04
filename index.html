@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#0f1115" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <title>Quick Capture</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --card: #171a21;
+      --text: #e8eaed;
+      --muted: #8b929e;
+      --accent: #4f8cff;
+      --accent-press: #2f6fe0;
+      --ok: #3ecf8e;
+      --warn: #f5a623;
+      --danger: #ff5d5d;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body {
+      margin: 0; height: 100%;
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overscroll-behavior: none;
+    }
+    body { display: flex; flex-direction: column; }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 20px calc(8px + env(safe-area-inset-top)) 20px;
+    }
+    header h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .2px; }
+    .gear {
+      background: none; border: none; color: var(--muted);
+      font-size: 22px; cursor: pointer; padding: 6px; line-height: 1;
+    }
+    main {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 26px;
+      padding: 10px 22px calc(28px + env(safe-area-inset-bottom)) 22px;
+    }
+    #status { font-size: 19px; color: var(--muted); min-height: 24px; text-align: center; transition: color .2s; }
+    #status.listening { color: var(--accent); }
+    #status.ok { color: var(--ok); }
+    #status.warn { color: var(--warn); }
+    #talk {
+      width: 190px; height: 190px; border-radius: 50%;
+      border: none; cursor: pointer; color: #fff;
+      background: radial-gradient(circle at 50% 38%, #5b95ff, var(--accent));
+      box-shadow: 0 12px 40px rgba(79,140,255,.35);
+      font-size: 64px; display: grid; place-items: center;
+      transition: transform .08s ease, box-shadow .2s ease, background .2s ease;
+      user-select: none;
+    }
+    #talk:active { transform: scale(.96); }
+    #talk.listening {
+      background: radial-gradient(circle at 50% 38%, #ff8a8a, var(--danger));
+      box-shadow: 0 0 0 0 rgba(255,93,93,.55);
+      animation: pulse 1.4s infinite;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(255,93,93,.5); }
+      70% { box-shadow: 0 0 0 26px rgba(255,93,93,0); }
+      100% { box-shadow: 0 0 0 0 rgba(255,93,93,0); }
+    }
+    #transcript {
+      width: 100%; max-width: 520px; min-height: 64px;
+      background: var(--card); border-radius: 14px; padding: 16px 18px;
+      font-size: 16px; line-height: 1.5; color: var(--text);
+      white-space: pre-wrap; word-break: break-word;
+    }
+    #transcript:empty::before { content: "Your words will appear here…"; color: var(--muted); }
+    #transcript .interim { color: var(--muted); }
+    #queueInfo { font-size: 13px; color: var(--muted); min-height: 18px; text-align: center; }
+    #queueInfo.has { color: var(--warn); }
+    /* Settings dialog */
+    dialog {
+      border: none; border-radius: 16px; background: var(--card); color: var(--text);
+      padding: 22px; width: min(92vw, 440px);
+    }
+    dialog::backdrop { background: rgba(0,0,0,.55); }
+    dialog h2 { margin: 0 0 14px; font-size: 18px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+    input {
+      width: 100%; padding: 11px 12px; border-radius: 9px; border: 1px solid #2a2f3a;
+      background: #0f1218; color: var(--text); font-size: 15px;
+    }
+    .row { display: flex; gap: 10px; margin-top: 20px; }
+    .btn {
+      flex: 1; padding: 12px; border-radius: 10px; border: none; font-size: 15px;
+      font-weight: 600; cursor: pointer;
+    }
+    .btn.primary { background: var(--accent); color: #fff; }
+    .btn.ghost { background: #232834; color: var(--text); }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 12px; line-height: 1.45; }
+    .typelink {
+      background: none; border: none; color: var(--muted); font-size: 14px;
+      cursor: pointer; padding: 6px 10px; text-decoration: underline;
+    }
+    textarea {
+      width: 100%; padding: 11px 12px; border-radius: 9px; border: 1px solid #2a2f3a;
+      background: #0f1218; color: var(--text); font-size: 15px; font-family: inherit; resize: vertical;
+    }
+    .unsupported { color: var(--warn); font-size: 14px; text-align: center; max-width: 460px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Quick Capture</h1>
+    <button class="gear" id="openSettings" aria-label="Settings">⚙</button>
+  </header>
+
+  <main>
+    <div id="status">Tap to talk</div>
+    <button id="talk" aria-label="Tap to talk">🎙️</button>
+    <div id="transcript" aria-live="polite"></div>
+    <div id="queueInfo"></div>
+    <button id="typeBtn" class="typelink">⌨ Type instead</button>
+    <div id="unsupported" class="unsupported" hidden>
+      This browser doesn't support speech recognition — use "Type instead" below, or Chrome on Android / desktop Chrome for voice.
+    </div>
+  </main>
+
+  <dialog id="typeDlg">
+    <h2>Type a capture</h2>
+    <textarea id="typeText" rows="4" placeholder="What's on your mind?"></textarea>
+    <div class="row">
+      <button class="btn ghost" id="cancelType">Cancel</button>
+      <button class="btn primary" id="sendType">Capture</button>
+    </div>
+    <p class="hint">Typing works fully offline — the capture queues and syncs when you're back online. (Voice needs a connection: Chrome's speech recognition runs on Google's servers.)</p>
+  </dialog>
+
+  <dialog id="settings">
+    <h2>Settings</h2>
+    <label for="webhook">Capture webhook URL</label>
+    <input id="webhook" type="url" placeholder="https://your-n8n-host/webhook/capture" />
+    <label for="secret">Shared secret</label>
+    <input id="secret" type="text" placeholder="the X-Capture-Token you set in n8n" />
+    <div class="row">
+      <button class="btn ghost" id="cancelSettings">Cancel</button>
+      <button class="btn primary" id="saveSettings">Save</button>
+    </div>
+    <p class="hint">These are stored only on this device. The secret must match the header check in your n8n webhook so only your devices can post captures.</p>
+  </dialog>
+
+  <script>
+  (function () {
+    "use strict";
+
+    // ---------- Config (per-device, localStorage) ----------
+    const CFG = {
+      get url() { return localStorage.getItem("qc_webhook") || ""; },
+      set url(v) { localStorage.setItem("qc_webhook", v.trim()); },
+      get secret() { return localStorage.getItem("qc_secret") || ""; },
+      set secret(v) { localStorage.setItem("qc_secret", v.trim()); }
+    };
+
+    // ---------- DOM ----------
+    const $ = (id) => document.getElementById(id);
+    const talkBtn = $("talk");
+    const statusEl = $("status");
+    const transcriptEl = $("transcript");
+    const queueEl = $("queueInfo");
+    const dlg = $("settings");
+
+    // ---------- IndexedDB offline queue ----------
+    let db = null;
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open("captureDB", 1);
+        req.onupgradeneeded = (e) => {
+          e.target.result.createObjectStore("queue", { keyPath: "id", autoIncrement: true });
+        };
+        req.onsuccess = (e) => { db = e.target.result; resolve(db); };
+        req.onerror = () => reject(req.error);
+      });
+    }
+    function tx(mode) { return db.transaction("queue", mode).objectStore("queue"); }
+    function enqueue(item) {
+      return new Promise((res, rej) => { const r = tx("readwrite").add(item); r.onsuccess = res; r.onerror = () => rej(r.error); });
+    }
+    function allQueued() {
+      return new Promise((res, rej) => { const r = tx("readonly").getAll(); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    }
+    function removeQueued(id) {
+      return new Promise((res, rej) => { const r = tx("readwrite").delete(id); r.onsuccess = res; r.onerror = () => rej(r.error); });
+    }
+    async function refreshQueueInfo() {
+      try {
+        const items = await allQueued();
+        if (items.length) { queueEl.textContent = `${items.length} capture(s) waiting to sync`; queueEl.classList.add("has"); }
+        else { queueEl.textContent = ""; queueEl.classList.remove("has"); }
+      } catch (_) {}
+    }
+
+    // ---------- Sound + voice feedback ----------
+    let audioCtx = null;
+    function chime(kind) {
+      try {
+        audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.connect(g); g.connect(audioCtx.destination);
+        o.type = "sine";
+        o.frequency.value = kind === "ok" ? 880 : kind === "warn" ? 520 : 660;
+        g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.25, audioCtx.currentTime + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.25);
+        o.start(); o.stop(audioCtx.currentTime + 0.26);
+      } catch (_) {}
+    }
+    function speak(text) {
+      try {
+        if (!("speechSynthesis" in window)) return;
+        const u = new SpeechSynthesisUtterance(text);
+        u.rate = 1.05; u.pitch = 1.0;
+        speechSynthesis.speak(u);
+      } catch (_) {}
+    }
+    function setStatus(text, cls) {
+      statusEl.textContent = text;
+      statusEl.className = cls || "";
+    }
+
+    // ---------- Send / queue ----------
+    async function deliver(payload) {
+      if (!CFG.url) { dlg.showModal(); throw new Error("no-webhook"); }
+      const res = await fetch(CFG.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Capture-Token": CFG.secret },
+        body: JSON.stringify(payload)
+      });
+      if (res.status >= 400 && res.status < 500) throw new Error("rejected-" + res.status);
+      if (!res.ok) throw new Error("http-" + res.status);
+      return true;
+    }
+    async function captureText(text) {
+      const payload = {
+        text: text.trim(),
+        capturedAt: new Date().toISOString(),
+        device: navigator.userAgent,
+        source: "pwa-capture"
+      };
+      if (!payload.text) return;
+      try {
+        await deliver(payload);
+        setStatus("Got it, filed", "ok"); chime("ok"); speak("Got it, filed.");
+      } catch (e) {
+        if (e.message === "no-webhook") { setStatus("Set your webhook in settings", "warn"); return; }
+        if (e.message.startsWith("rejected-")) {
+          // Server refused it (bad token, empty text). Don't queue — a rejected
+          // item would never send and would block everything behind it.
+          setStatus("Rejected (" + e.message.slice(9) + ") — check token in ⚙", "warn"); chime("warn");
+          return;
+        }
+        await enqueue(payload);
+        setStatus("Saved offline — will sync", "warn"); chime("warn"); speak("Saved offline. I'll sync it when you're back online.");
+      }
+      refreshQueueInfo();
+    }
+    async function flushQueue() {
+      if (!CFG.url) return;
+      const items = await allQueued();
+      for (const it of items) {
+        try { const { id, ...payload } = it; await deliver(payload); await removeQueued(id); }
+        catch (e) {
+          if (String(e.message).startsWith("rejected-")) setStatus("Sync blocked — check token in ⚙", "warn");
+          break; // stop on first failure; try again later
+        }
+      }
+      refreshQueueInfo();
+    }
+
+    // ---------- Speech recognition ----------
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recog = null, listening = false, finalText = "";
+
+    function initRecog() {
+      if (!SR) { $("unsupported").hidden = false; talkBtn.disabled = true; return; }
+      recog = new SR();
+      recog.continuous = true;
+      recog.interimResults = true;
+      recog.lang = "en-US";
+      recog.onresult = (e) => {
+        let interim = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const r = e.results[i];
+          if (r.isFinal) finalText += r[0].transcript + " ";
+          else interim += r[0].transcript;
+        }
+        transcriptEl.innerHTML = escapeHTML(finalText) + '<span class="interim">' + escapeHTML(interim) + "</span>";
+      };
+      recog.onend = () => {
+        if (listening) { // user hasn't tapped stop; ended on silence -> finalize
+          stopListening();
+        }
+      };
+      recog.onerror = (e) => {
+        listening = false; talkBtn.classList.remove("listening");
+        if (e.error === "no-speech") { setStatus("Didn't catch that — tap to talk", "warn"); }
+        else if (e.error === "not-allowed") { setStatus("Mic permission needed", "warn"); }
+        else if (e.error === "network") {
+          // Chrome's speech recognition runs server-side and fails offline.
+          // Typed captures still work offline (they queue in IndexedDB).
+          setStatus("No connection for speech — type it instead", "warn");
+          $("typeDlg").showModal(); $("typeText").focus();
+        }
+        else { setStatus("Tap to talk", ""); }
+      };
+    }
+    function escapeHTML(s) { return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+    function startListening() {
+      if (!recog) return;
+      finalText = ""; transcriptEl.innerHTML = "";
+      try { recog.start(); } catch (_) {}
+      listening = true;
+      talkBtn.classList.add("listening");
+      setStatus("Listening… tap to finish", "listening");
+    }
+    function stopListening() {
+      listening = false;
+      talkBtn.classList.remove("listening");
+      try { recog.stop(); } catch (_) {}
+      const text = finalText.trim();
+      if (text) { setStatus("Saving…", ""); captureText(text); }
+      else { setStatus("Tap to talk", ""); }
+    }
+
+    talkBtn.addEventListener("click", () => {
+      if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+      listening ? stopListening() : startListening();
+    });
+
+    // ---------- Settings ----------
+    $("openSettings").addEventListener("click", () => {
+      $("webhook").value = CFG.url; $("secret").value = CFG.secret; dlg.showModal();
+    });
+    $("cancelSettings").addEventListener("click", () => dlg.close());
+    $("saveSettings").addEventListener("click", () => {
+      CFG.url = $("webhook").value; CFG.secret = $("secret").value; dlg.close();
+      setStatus("Tap to talk", ""); flushQueue();
+    });
+
+    // ---------- Typed capture (works offline; also the fallback when speech is unavailable) ----------
+    $("typeBtn").addEventListener("click", () => { $("typeText").value = ""; $("typeDlg").showModal(); $("typeText").focus(); });
+    $("cancelType").addEventListener("click", () => $("typeDlg").close());
+    $("sendType").addEventListener("click", () => {
+      const t = $("typeText").value.trim();
+      $("typeDlg").close();
+      if (t) { setStatus("Saving…", ""); captureText(t); }
+    });
+
+    // ---------- Boot ----------
+    window.addEventListener("online", flushQueue);
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    }
+    openDB().then(() => { refreshQueueInfo(); flushQueue(); });
+    initRecog();
+    if (!CFG.url) setStatus("Tap ⚙ to set your webhook", "warn");
+  })();
+  </script>
+</body>
+</html>
