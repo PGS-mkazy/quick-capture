@@ -1,5 +1,5 @@
 // Quick Capture service worker — caches the app shell so the app opens offline.
-const CACHE = "quick-capture-v1";
+const CACHE = "quick-capture-v2";
 const SHELL = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {
