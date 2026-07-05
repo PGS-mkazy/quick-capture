@@ -120,6 +120,7 @@
     <div id="transcript" aria-live="polite"></div>
     <div id="queueInfo"></div>
     <button id="typeBtn" class="typelink">⌨ Type instead</button>
+    <div id="appver" style="font-size:11px;color:var(--muted);">v3</div>
     <div id="unsupported" class="unsupported" hidden>
       This browser doesn't support speech recognition — use "Type instead" below, or Chrome on Android / desktop Chrome for voice.
     </div>
@@ -277,7 +278,7 @@
 
     // ---------- Speech recognition ----------
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    let recog = null, listening = false, finalText = "";
+    let recog = null, listening = false, finalText = "", fullText = "";
 
     function initRecog() {
       if (!SR) { $("unsupported").hidden = false; talkBtn.disabled = true; return; }
@@ -286,19 +287,33 @@
       recog.interimResults = true;
       recog.lang = "en-US";
       recog.onresult = (e) => {
-        // Rebuild from the FULL results list every time instead of appending
-        // from e.resultIndex. Chrome on Android re-fires final segments
-        // repeatedly; appending them snowballs the transcript with duplicates.
-        // e.results always holds the whole session, so rebuilding is safe
-        // everywhere and self-deduplicating.
-        let final = "", interim = "";
+        // Android Chrome quirks (v3 fix):
+        // 1. It re-fires final segments repeatedly.
+        // 2. It can report CUMULATIVE snapshots as separate results
+        //    ("is", "is a", "is a quick", ...) — so rebuilding from the
+        //    full list still snowballs unless we collapse them.
+        // Fix: rebuild from e.results, then drop any result whose text is
+        // a prefix of the NEXT result's text (a superseded snapshot) or an
+        // exact repeat of it.
+        const parts = [];
         for (let i = 0; i < e.results.length; i++) {
-          const r = e.results[i];
-          if (r.isFinal) final += r[0].transcript + " ";
-          else interim += r[0].transcript;
+          parts.push({ text: e.results[i][0].transcript, isFinal: e.results[i].isFinal });
+        }
+        const norm = (s) => s.trim().replace(/\s+/g, " ").toLowerCase();
+        const kept = parts.filter((p, i) => {
+          const next = parts[i + 1];
+          return !(next && norm(next.text).startsWith(norm(p.text)));
+        });
+        let final = "", interim = "";
+        for (const p of kept) {
+          if (p.isFinal) final += p.text.trim() + " ";
+          else interim += p.text;
         }
         finalText = final;
-        transcriptEl.innerHTML = escapeHTML(finalText) + '<span class="interim">' + escapeHTML(interim) + "</span>";
+        // Keep the full text (final + interim) so a capture isn't lost if
+        // Android never flips segments to isFinal before the user taps stop.
+        fullText = (final + " " + interim).replace(/\s+/g, " ").trim();
+        transcriptEl.innerHTML = escapeHTML(final) + '<span class="interim">' + escapeHTML(interim) + "</span>";
       };
       recog.onend = () => {
         if (listening) { // user hasn't tapped stop; ended on silence -> finalize
@@ -322,7 +337,7 @@
 
     function startListening() {
       if (!recog) return;
-      finalText = ""; transcriptEl.innerHTML = "";
+      finalText = ""; fullText = ""; transcriptEl.innerHTML = "";
       try { recog.start(); } catch (_) {}
       listening = true;
       talkBtn.classList.add("listening");
@@ -332,7 +347,7 @@
       listening = false;
       talkBtn.classList.remove("listening");
       try { recog.stop(); } catch (_) {}
-      const text = finalText.trim();
+      const text = (fullText || finalText).trim();
       if (text) { setStatus("Saving…", ""); captureText(text); }
       else { setStatus("Tap to talk", ""); }
     }
