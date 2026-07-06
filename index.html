@@ -67,6 +67,14 @@
       70% { box-shadow: 0 0 0 26px rgba(255,93,93,0); }
       100% { box-shadow: 0 0 0 0 rgba(255,93,93,0); }
     }
+    #modeRow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    .modeChip {
+      padding: 6px 14px; border-radius: 999px; border: 1px solid #2a2f3a;
+      background: transparent; color: var(--muted); font-size: 12px;
+      cursor: pointer; transition: background .15s ease, color .15s ease, border-color .15s ease;
+    }
+    .modeChip:active { transform: scale(.96); }
+    .modeChip.selected { background: var(--accent); color: #fff; border-color: var(--accent); }
     #transcript {
       width: 100%; max-width: 520px; min-height: 64px;
       background: var(--card); border-radius: 14px; padding: 16px 18px;
@@ -75,8 +83,25 @@
     }
     #transcript:empty::before { content: "Your words will appear here…"; color: var(--muted); }
     #transcript .interim { color: var(--muted); }
+    #editBox {
+      width: 100%; max-width: 520px; min-height: 64px;
+      background: var(--card); border-radius: 14px; padding: 16px 18px;
+      font-size: 16px; line-height: 1.5; color: var(--text);
+      border: 1px solid var(--accent); font-family: inherit; resize: vertical;
+    }
+    #editBox[hidden] { display: none; }
     #queueInfo { font-size: 13px; color: var(--muted); min-height: 18px; text-align: center; }
     #queueInfo.has { color: var(--warn); }
+    #actionRow { display: flex; gap: 14px; justify-content: center; }
+    #actionRow[hidden] { display: none; }
+    .roundBtn {
+      width: 56px; height: 56px; border-radius: 50%; border: none; cursor: pointer;
+      font-size: 24px; display: grid; place-items: center; color: #fff;
+      transition: transform .08s ease;
+    }
+    .roundBtn:active { transform: scale(.94); }
+    #sendBtn { background: var(--ok); }
+    #discardBtn { background: #2a2f3a; color: var(--muted); }
     /* Settings dialog */
     dialog {
       border: none; border-radius: 16px; background: var(--card); color: var(--text);
@@ -117,10 +142,20 @@
   <main>
     <div id="status">Tap to talk</div>
     <button id="talk" aria-label="Tap to talk">🎙️</button>
+    <div id="modeRow">
+      <button class="modeChip" data-mode="idea" aria-pressed="false">💡 Idea</button>
+      <button class="modeChip" data-mode="action" aria-pressed="false">✅ Action</button>
+      <button class="modeChip" data-mode="reminder" aria-pressed="false">⏰ Reminder</button>
+    </div>
     <div id="transcript" aria-live="polite"></div>
+    <textarea id="editBox" rows="3" hidden></textarea>
+    <div id="actionRow" hidden>
+      <button id="discardBtn" class="roundBtn" aria-label="Discard">🗑</button>
+      <button id="sendBtn" class="roundBtn" aria-label="Send">✓</button>
+    </div>
     <div id="queueInfo"></div>
     <button id="typeBtn" class="typelink">⌨ Type instead</button>
-    <div id="appver" style="font-size:11px;color:var(--muted);">v3</div>
+    <div id="appver" style="font-size:11px;color:var(--muted);">v6</div>
     <div id="unsupported" class="unsupported" hidden>
       This browser doesn't support speech recognition — use "Type instead" below, or Chrome on Android / desktop Chrome for voice.
     </div>
@@ -167,7 +202,26 @@
     const statusEl = $("status");
     const transcriptEl = $("transcript");
     const queueEl = $("queueInfo");
+    const actionRow = $("actionRow");
+    const editBox = $("editBox");
     const dlg = $("settings");
+
+    // ---------- Optional mode tag (secondary to voice/type capture) ----------
+    // Purely additive: picking a chip tags the *next* capture with a `mode`
+    // field; capturing with none selected works exactly as before (no field sent).
+    let selectedMode = null;
+    const modeBtns = Array.from(document.querySelectorAll(".modeChip"));
+    function setMode(m) {
+      selectedMode = m;
+      modeBtns.forEach((b) => {
+        const on = b.dataset.mode === m;
+        b.classList.toggle("selected", on);
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+    }
+    modeBtns.forEach((b) => {
+      b.addEventListener("click", () => setMode(selectedMode === b.dataset.mode ? null : b.dataset.mode));
+    });
 
     // ---------- IndexedDB offline queue ----------
     let db = null;
@@ -239,13 +293,14 @@
       if (!res.ok) throw new Error("http-" + res.status);
       return true;
     }
-    async function captureText(text) {
+    async function captureText(text, mode) {
       const payload = {
         text: text.trim(),
         capturedAt: new Date().toISOString(),
         device: navigator.userAgent,
         source: "pwa-capture"
       };
+      if (mode) payload.mode = mode; // optional tag: "idea" | "action" | "reminder" — omitted entirely if none picked
       if (!payload.text) return;
       try {
         await deliver(payload);
@@ -277,8 +332,18 @@
     }
 
     // ---------- Speech recognition ----------
+    // State machine (v6 — pause/continue + edit-before-send + optional mode tag):
+    //   idle      -> tap mic: start fresh recording
+    //   listening -> tap mic: pause (keep text, don't send); silence timeout also pauses
+    //   paused    -> transcript becomes an editable textarea (fix STT mistakes here);
+    //                tap mic: commit any edits, resume recording (appends to what's captured)
+    // In listening or paused, ✓ finalizes + sends (using edited text if present); 🗑 discards without sending.
+    // Sending always clears the box immediately so it's ready for the next note.
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    let recog = null, listening = false, finalText = "", fullText = "";
+    let recog = null;
+    let state = "idle"; // idle | listening | paused
+    let committedText = ""; // finalized across earlier pause/resume cycles this capture
+    let finalText = "", fullText = ""; // current listening-session text
 
     function initRecog() {
       if (!SR) { $("unsupported").hidden = false; talkBtn.disabled = true; return; }
@@ -313,49 +378,123 @@
         // Keep the full text (final + interim) so a capture isn't lost if
         // Android never flips segments to isFinal before the user taps stop.
         fullText = (final + " " + interim).replace(/\s+/g, " ").trim();
-        transcriptEl.innerHTML = escapeHTML(final) + '<span class="interim">' + escapeHTML(interim) + "</span>";
+        renderTranscript(final, interim);
       };
       recog.onend = () => {
-        if (listening) { // user hasn't tapped stop; ended on silence -> finalize
-          stopListening();
+        if (state === "listening") { // ended on silence, not an explicit pause/send -> pause
+          pauseListening();
         }
       };
       recog.onerror = (e) => {
-        listening = false; talkBtn.classList.remove("listening");
-        if (e.error === "no-speech") { setStatus("Didn't catch that — tap to talk", "warn"); }
-        else if (e.error === "not-allowed") { setStatus("Mic permission needed", "warn"); }
+        if (e.error === "no-speech") { pauseListening("Didn't catch that — tap mic to try again"); }
+        else if (e.error === "not-allowed") { state = "idle"; talkBtn.classList.remove("listening"); setStatus("Mic permission needed", "warn"); }
         else if (e.error === "network") {
           // Chrome's speech recognition runs server-side and fails offline.
           // Typed captures still work offline (they queue in IndexedDB).
+          state = "idle"; talkBtn.classList.remove("listening");
           setStatus("No connection for speech — type it instead", "warn");
           $("typeDlg").showModal(); $("typeText").focus();
         }
-        else { setStatus("Tap to talk", ""); }
+        else { state = "idle"; talkBtn.classList.remove("listening"); setStatus("Tap to talk", ""); }
       };
     }
     function escapeHTML(s) { return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
 
+    function renderTranscript(final, interim) {
+      const committedPrefix = committedText ? committedText + " " : "";
+      transcriptEl.innerHTML = escapeHTML(committedPrefix + final) + '<span class="interim">' + escapeHTML(interim) + "</span>";
+    }
+    function combinedText() {
+      return (committedText + " " + fullText).replace(/\s+/g, " ").trim();
+    }
+    // The authoritative "what would be sent right now" text: the edit box wins
+    // if it's open (user may have tweaked or cleared it), else the live capture.
+    function currentText() {
+      return editBox.hidden ? combinedText() : editBox.value.trim();
+    }
+    function updateActionRow() {
+      actionRow.hidden = state === "idle" && !currentText();
+    }
+    function showEditor(text) {
+      transcriptEl.hidden = true;
+      editBox.hidden = false;
+      editBox.value = text;
+    }
+    function hideEditor() {
+      editBox.hidden = true;
+      transcriptEl.hidden = false;
+    }
+
     function startListening() {
       if (!recog) return;
-      finalText = ""; fullText = ""; transcriptEl.innerHTML = "";
+      if (state === "idle") {
+        committedText = ""; // fresh capture
+      } else if (state === "paused") {
+        committedText = editBox.value.trim(); // commit any edits made during the pause
+        hideEditor();
+        renderTranscript("", ""); // show the committed baseline immediately, no stale flash
+      }
+      finalText = ""; fullText = "";
       try { recog.start(); } catch (_) {}
-      listening = true;
+      state = "listening";
       talkBtn.classList.add("listening");
-      setStatus("Listening… tap to finish", "listening");
+      setStatus("Listening… tap mic to pause", "listening");
+      updateActionRow();
     }
-    function stopListening() {
-      listening = false;
+    function pauseListening(msg) {
       talkBtn.classList.remove("listening");
       try { recog.stop(); } catch (_) {}
-      const text = (fullText || finalText).trim();
-      if (text) { setStatus("Saving…", ""); captureText(text); }
+      committedText = combinedText();
+      finalText = ""; fullText = "";
+      if (!committedText) {
+        // Nothing captured yet (e.g. no-speech timeout right away) — back to idle.
+        state = "idle";
+        hideEditor();
+        setStatus(msg || "Tap to talk", msg ? "warn" : "");
+      } else {
+        state = "paused";
+        showEditor(committedText); // review + fix mistakes here before continuing or sending
+        setStatus(msg || "Paused — review/edit below, tap mic to continue, ✓ to finish", "warn");
+      }
+      updateActionRow();
+    }
+    async function finalizeAndSend() {
+      const text = currentText();
+      const mode = selectedMode;
+      try { recog && recog.stop(); } catch (_) {}
+      state = "idle";
+      talkBtn.classList.remove("listening");
+      committedText = ""; finalText = ""; fullText = "";
+      transcriptEl.innerHTML = "";
+      editBox.value = "";
+      hideEditor();
+      setMode(null);
+      updateActionRow();
+      // Clear immediately so the box is ready for the next note, regardless of
+      // how long the network send/queue takes.
+      if (text) { setStatus("Saving…", ""); await captureText(text, mode); }
       else { setStatus("Tap to talk", ""); }
+    }
+    function discardCapture() {
+      try { recog && recog.stop(); } catch (_) {}
+      state = "idle";
+      talkBtn.classList.remove("listening");
+      committedText = ""; finalText = ""; fullText = "";
+      transcriptEl.innerHTML = "";
+      editBox.value = "";
+      hideEditor();
+      setMode(null);
+      updateActionRow();
+      setStatus("Discarded — tap to talk", "");
     }
 
     talkBtn.addEventListener("click", () => {
       if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
-      listening ? stopListening() : startListening();
+      if (state === "listening") pauseListening();
+      else startListening(); // covers both idle (fresh) and paused (resume)
     });
+    $("sendBtn").addEventListener("click", finalizeAndSend);
+    $("discardBtn").addEventListener("click", discardCapture);
 
     // ---------- Settings ----------
     $("openSettings").addEventListener("click", () => {
@@ -372,8 +511,10 @@
     $("cancelType").addEventListener("click", () => $("typeDlg").close());
     $("sendType").addEventListener("click", () => {
       const t = $("typeText").value.trim();
+      const mode = selectedMode;
       $("typeDlg").close();
-      if (t) { setStatus("Saving…", ""); captureText(t); }
+      setMode(null);
+      if (t) { setStatus("Saving…", ""); captureText(t, mode); }
     });
 
     // ---------- Boot ----------
